@@ -596,7 +596,10 @@ class XiaomiRemote2App:
 
 
 def main():
-    root = Tk(); XiaomiRemote2App(root); root.mainloop()
+    # Phase-one product UI intentionally runs as a presentation prototype.
+    # The existing listener/controller classes remain available for phase two.
+    from xiaomi_remote2_ui import RemotePrototypeApp
+    root = Tk(); RemotePrototypeApp(root); root.mainloop()
 
 
 if __name__ == "__main__": main()
