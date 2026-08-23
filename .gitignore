@@ -12,3 +12,4 @@ build/
 *.wav
 *.raw
 xiaomi_remote2_mapping.json
+xiaomi_remote2_ui_mapping.json
