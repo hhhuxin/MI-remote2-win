@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import patch
 from XiaomiRemote2_Windows import ACTION_VK, DEFAULT_ACTIONS, HID_USAGE_TO_BUTTON, REMOTE_BUTTONS, RawInputListener, _INPUT, path_matches, normalize_path
+from xiaomi_remote2_ui import parse_key_combo, send_combo_down, send_combo_up
 from xiaomi_remote2_protocol import Capabilities, IMAADPCMDecoder, mic_open_command
 
 
@@ -34,6 +36,17 @@ class Remote2IdentityTests(unittest.TestCase):
         listener._handle_hid(None, None, body(bytes.fromhex("01 00 00 4F 00 00 00 00 00")), "path")
         listener._handle_hid(None, None, body(bytes.fromhex("01 00 00 00 00 00 00 00 00")), "path")
         self.assertEqual([(event[1], event[2]) for event in events], [("DOWN", "right"), ("UP", "right")])
+
+    def test_mapping_parser_supports_modifier_only_and_main_key_combos(self):
+        self.assertEqual(parse_key_combo("Ctrl + Win"), ((0x11, 0x5B), None))
+        self.assertEqual(parse_key_combo("Ctrl + Shift + S"), ((0x11, 0x10), 0x53))
+        self.assertEqual(parse_key_combo("确定"), ((), 0x0D))
+
+    def test_mapping_injector_keeps_modifier_only_press_release_balanced(self):
+        with patch("xiaomi_remote2_ui._send_key") as send:
+            combo = parse_key_combo("Ctrl + Win")
+            send_combo_down(*combo); send_combo_up(*combo)
+        self.assertEqual([call.args for call in send.call_args_list], [(0x11, False), (0x5B, False), (0x5B, True), (0x11, True)])
 
     def test_ble_hid_path_variants(self):
         self.assertTrue(path_matches(r"\\?\HID#{00001812}_Dev_VID&012717_PID&32B8_REV&00A4\kbd"))

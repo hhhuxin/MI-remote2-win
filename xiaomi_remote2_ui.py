@@ -1,16 +1,19 @@
 """First-stage Windows 11 UI prototype for Xiaomi Remote 2 PC.
 
-This module intentionally contains presentation and editable mapping state only.
-It does not start Raw Input, inject keyboard events, or connect BLE.
+This module owns the first usable mapping workflow. BLE remains outside this
+phase, while Raw Input and scoped keyboard output are enabled only after the
+user explicitly starts listening.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, StringVar, Tk, Button, PhotoImage
+import ctypes
+import re
+from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, StringVar, Tk, Button, PhotoImage, messagebox
 from tkinter import ttk
 
-from XiaomiRemote2_Windows import BUTTON_LABELS, REMOTE_BUTTONS
+from XiaomiRemote2_Windows import BUTTON_LABELS, REMOTE_BUTTONS, RawInputListener, enumerate_device_paths, _send_key
 
 
 BG = "#f5f5f7"
@@ -22,6 +25,62 @@ BLUE = "#007aff"
 LINE = "#dedee3"
 GREEN = "#34c759"
 FONT = "Microsoft YaHei UI"
+
+VK_NAMES = {
+    "ctrl": 0x11, "control": 0x11, "左ctrl": 0xA2, "右ctrl": 0xA3,
+    "win": 0x5B, "windows": 0x5B, "左win": 0x5B, "右win": 0x5C,
+    "shift": 0x10, "左shift": 0xA0, "右shift": 0xA1,
+    "alt": 0x12, "左alt": 0xA4, "右alt": 0xA5,
+    "enter": 0x0D, "return": 0x0D, "确定": 0x0D,
+    "backspace": 0x08, "退格": 0x08, "返回": 0x08,
+    "escape": 0x1B, "esc": 0x1B, "空格": 0x20, "space": 0x20,
+    "tab": 0x09, "home": 0x24, "主页": 0x24, "end": 0x23,
+    "up": 0x26, "上": 0x26, "down": 0x28, "下": 0x28,
+    "left": 0x25, "左": 0x25, "right": 0x27, "右": 0x27,
+    "delete": 0x2E, "insert": 0x2D, "pageup": 0x21, "pagedown": 0x22,
+    "volume_up": 0xAF, "volume+": 0xAF, "音量+": 0xAF,
+    "volume_down": 0xAE, "volume-": 0xAE, "音量-": 0xAE,
+    "mute": 0xAD, "静音": 0xAD, "play_pause": 0xB3,
+}
+VK_NAMES.update({f"f{i}": 0x6F + i for i in range(1, 25)})
+VK_NAMES.update({str(i): 0x30 + i for i in range(10)})
+VK_NAMES.update({chr(ord("a") + i): 0x41 + i for i in range(26)})
+
+
+def parse_key_combo(text: str) -> tuple[tuple[int, ...], int | None]:
+    """Parse a display string such as ``Ctrl + Win`` or ``Ctrl + Shift + S``."""
+    tokens = [token.strip().casefold() for token in re.split(r"\s*\+\s*|[,，]", text or "") if token.strip()]
+    if not tokens:
+        raise ValueError("映射不能为空")
+    codes = []
+    for token in tokens:
+        key = VK_NAMES.get(token) or VK_NAMES.get(token.replace(" ", ""))
+        if key is None and token.startswith("vk_"):
+            try: key = int(token[3:], 16)
+            except ValueError: key = None
+        if key is None:
+            raise ValueError(f"无法识别按键：{token}")
+        codes.append(key)
+    modifiers = {0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
+    modifier_codes = tuple(code for code in codes if code in modifiers)
+    mains = [code for code in codes if code not in modifiers]
+    if len(mains) > 1:
+        raise ValueError("一个组合键只能有一个主键")
+    return modifier_codes, mains[0] if mains else None
+
+
+def send_combo_down(modifiers: tuple[int, ...], main: int | None):
+    if main is None:
+        for code in modifiers: _send_key(code, False)
+    else:
+        _send_key(main, False, modifiers)
+
+
+def send_combo_up(modifiers: tuple[int, ...], main: int | None):
+    if main is None:
+        for code in reversed(modifiers): _send_key(code, True)
+    else:
+        _send_key(main, True, modifiers)
 
 
 def _rounded_rect(canvas: Canvas, x1, y1, x2, y2, radius=14, **kwargs):
@@ -39,13 +98,21 @@ class RemotePrototypeApp:
         self.page = "remote"
         self.current_button = StringVar(value="尚未选择按键")
         self.status = StringVar(value="已连接")
+        self.listener_status = StringVar(value="监听未启动")
+        self.device_var = StringVar(value="自动选择设备")
         self.mapping_file = Path(__file__).with_name("xiaomi_remote2_ui_mapping.json")
         self.bindings = self._load_bindings()
+        self.mapping_vars: dict[str, StringVar] = {}
+        self.device_paths: list[str] = []
+        self.held_combos: dict[str, tuple[tuple[int, ...], int | None]] = {}
+        self.listener = RawInputListener(self._on_remote_raw, self._on_listener_status)
+        self.listening = False
         self.nav_buttons: dict[str, Button] = {}
         self.content: Frame | None = None
         self._setup_style()
         self._build_shell()
         self.show_page("remote")
+        root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _setup_style(self):
         style = ttk.Style(self.root)
@@ -128,7 +195,14 @@ class RemotePrototypeApp:
         Frame(details, bg=LINE, height=1).pack(fill=X, padx=24, pady=25)
         Label(details, text="连接状态", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w").pack(fill=X, padx=24, pady=(0, 6))
         Label(details, text="● 已连接", bg=CARD, fg=GREEN, font=(FONT, 12), anchor="w").pack(fill=X, padx=24)
-        Label(details, text="按键交互已准备好\n第一阶段使用模拟状态", bg=CARD, fg=MUTED, font=(FONT, 9), justify="left", anchor="w").pack(fill=X, padx=24, pady=(14, 0))
+        Label(details, textvariable=self.listener_status, bg=CARD, fg=MUTED, font=(FONT, 9), justify="left", anchor="w", wraplength=210).pack(fill=X, padx=24, pady=(14, 0))
+        self.device_combo = ttk.Combobox(details, textvariable=self.device_var, state="readonly", width=26)
+        self.device_combo.pack(fill=X, padx=24, pady=(18, 6))
+        controls = Frame(details, bg=CARD); controls.pack(fill=X, padx=24)
+        Button(controls, text="刷新设备", command=self.refresh_devices, bg="#f1f1f4", activebackground="#e3e3e8", fg=TEXT, relief="flat", bd=0, font=(FONT, 9), padx=7, pady=6).pack(side=LEFT, expand=True, fill=X, padx=(0, 4))
+        Button(controls, text="开始监听", command=self.start_listener, bg=BLUE, activebackground="#006de0", fg="white", relief="flat", bd=0, font=(FONT, 9), padx=7, pady=6).pack(side=LEFT, expand=True, fill=X, padx=(4, 0))
+        Button(details, text="停止监听", command=self.stop_listener, bg="#f1f1f4", activebackground="#e3e3e8", fg=MUTED, relief="flat", bd=0, font=(FONT, 9), padx=7, pady=6).pack(fill=X, padx=24, pady=(6, 0))
+        self.refresh_devices()
 
     def _draw_remote(self, canvas):
         _rounded_rect(canvas, 115, 26, 355, 500, radius=38, fill="#202124", outline="#383a40", width=2)
@@ -158,6 +232,76 @@ class RemotePrototypeApp:
 
     def _select_button(self, button):
         self.current_button.set(BUTTON_LABELS[button])
+
+    def refresh_devices(self):
+        try:
+            self.device_paths = enumerate_device_paths()
+            values = ["自动选择设备"] + [f"{index + 1}: {path}" for index, path in enumerate(self.device_paths)]
+            self.device_combo["values"] = values
+            self.device_combo.current(0)
+            self.listener_status.set(f"发现 {len(self.device_paths)} 个遥控器设备")
+        except Exception as exc:
+            self.device_paths = []
+            self.device_combo["values"] = ["自动选择设备"]
+            self.device_combo.current(0)
+            self.listener_status.set(f"设备扫描失败：{exc}")
+
+    def _selected_device_path(self):
+        index = self.device_combo.current()
+        return self.device_paths[index - 1] if index > 0 and index <= len(self.device_paths) else None
+
+    def start_listener(self):
+        if self.listening: return
+        try:
+            self.listener.start(self._selected_device_path())
+            self.listening = True
+            self.status.set("监听中")
+            self.listener_status.set("监听中 · 只处理所选遥控器")
+        except Exception as exc:
+            messagebox.showerror("启动监听失败", str(exc))
+            self.listener_status.set(f"监听启动失败：{exc}")
+
+    def stop_listener(self):
+        try: self.listener.stop()
+        except Exception as exc: self.listener_status.set(f"停止监听失败：{exc}")
+        self._release_held()
+        self.listening = False
+        self.status.set("已连接")
+        self.listener_status.set("监听已停止")
+
+    def _on_listener_status(self, text):
+        self.root.after(0, lambda: self.listener_status.set(text))
+
+    def _on_remote_raw(self, data, edge, button, details):
+        if button not in REMOTE_BUTTONS: return
+        self.root.after(0, lambda b=button, e=edge: self._apply_mapping(b, e))
+        self.root.after(0, lambda b=button: self.current_button.set(BUTTON_LABELS[b]))
+
+    def _apply_mapping(self, button, edge):
+        if edge == "REPEAT": return
+        if edge == "DOWN":
+            text = self.mapping_vars.get(button, StringVar(value=self.bindings[button]["mapping"])).get()
+            try: combo = parse_key_combo(text)
+            except ValueError as exc:
+                self.listener_status.set(f"{BUTTON_LABELS[button]} 映射无效：{exc}")
+                return
+            try:
+                send_combo_down(*combo)
+                self.held_combos[button] = combo
+                self.listener_status.set(f"{BUTTON_LABELS[button]} → {text}")
+            except Exception as exc:
+                self.listener_status.set(f"发送映射失败：{exc}")
+        elif edge == "UP":
+            combo = self.held_combos.pop(button, None)
+            if combo is not None:
+                try: send_combo_up(*combo)
+                except Exception as exc: self.listener_status.set(f"释放映射失败：{exc}")
+
+    def _release_held(self):
+        for combo in tuple(self.held_combos.values()):
+            try: send_combo_up(*combo)
+            except Exception: pass
+        self.held_combos.clear()
 
     def _mapping_page(self):
         self._header("按键映射", "自定义遥控器上的按键行为。原始按键保持不变，你可以为每个按键指定新的操作。")
@@ -190,6 +334,7 @@ class RemotePrototypeApp:
             Button(row, text="恢复默认", command=lambda b=button: self._reset_mapping(b), bg="#f2f2f5", activebackground="#e3e3e8", fg=MUTED, relief="flat", bd=0, padx=10, pady=5, font=(FONT, 9), cursor="hand2").pack(side=RIGHT)
         bottom = Frame(card, bg=CARD); bottom.pack(fill=X, padx=26, pady=(4, 20))
         Label(bottom, text="修改只影响右侧自定义功能，左侧原始功能不会变化。", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w").pack(side=LEFT)
+        Button(bottom, text="保存映射", command=self.save, bg="#f1f1f4", activebackground="#e3e3e8", fg=TEXT, relief="flat", bd=0, padx=14, pady=7, font=(FONT, 9), cursor="hand2").pack(side=RIGHT, padx=(0, 8))
         Button(bottom, text="恢复全部默认", command=self._reset_all, bg=BLUE, fg="white", activebackground="#006de0", relief="flat", bd=0, padx=14, pady=7, font=(FONT, 9), cursor="hand2").pack(side=RIGHT)
 
     def _mapping_changed(self, button):
@@ -211,6 +356,10 @@ class RemotePrototypeApp:
     def save(self):
         payload = {button: {"original": data["original"], "mapping": data["mapping"]} for button, data in self.bindings.items()}
         self.mapping_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def close(self):
+        self.stop_listener()
+        self.root.destroy()
 
 
 def main():
