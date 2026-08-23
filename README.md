@@ -28,7 +28,7 @@ The borrowed protocol findings are:
 
 - HID identity: `VID 0x2717`, `PID 0x32B8`; BLE HID paths use `Dev_VID&012717_PID&32B8`.
 - Report usages match the shared Xiaomi profile: OK `0x28`, Home `0x4A`, arrows `0x4F`-`0x52`, menu `0x65`, power `0x66`, volume `0x80/0x81`, voice `0x3E`.
-- Voice transport uses the ATVV GATT service `AB5E0001-5A21-4F05-BC7D-AF01F617B664`, with TX/audio/control characteristics ending in `0002/0003/0004`. Windows BLE support is optional and remains explicitly diagnostic until a real RC001 session is verified.
+- Voice transport uses the ATVV GATT service `AB5E0001-5A21-4F05-BC7D-AF01F617B664`, with TX/audio/control characteristics ending in `0002/0003/0004`. Windows voice control is available when the WinRT and audio dependencies are installed; real-device acceptance still requires a live RC001/RC003 session.
 
 Install optional WinRT packages for BLE inspection:
 
