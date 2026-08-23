@@ -71,7 +71,7 @@ class RemotePrototypeApp:
         self.sidebar.pack_propagate(False)
         Label(self.sidebar, text="小米遥控器 2 PC", bg=SIDEBAR, fg=TEXT, font=(FONT, 16, "bold"), anchor="w").pack(fill=X, padx=22, pady=(28, 4))
         Label(self.sidebar, text="Windows 11 控制中心", bg=SIDEBAR, fg=MUTED, font=(FONT, 9), anchor="w").pack(fill=X, padx=23, pady=(0, 28))
-        for key, label in (("remote", "遥控器"), ("mapping", "按键映射"), ("settings", "设置")):
+        for key, label in (("remote", "◉  遥控器"), ("mapping", "⌨  按键映射"), ("settings", "⚙  设置")):
             button = Button(self.sidebar, text="  " + label, command=lambda k=key: self.show_page(k), relief="flat", bd=0, anchor="w", bg=SIDEBAR, activebackground="#dcdce1", activeforeground=TEXT, fg=MUTED, font=(FONT, 11), padx=12, pady=10, cursor="hand2")
             button.pack(fill=X, padx=12, pady=2)
             self.nav_buttons[key] = button
