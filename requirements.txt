@@ -1,0 +1,1 @@
+# No third-party dependencies. Tkinter and Windows APIs are provided by Python.

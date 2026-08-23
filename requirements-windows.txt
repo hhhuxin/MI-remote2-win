@@ -1,0 +1,7 @@
+# Optional BLE voice transport (WinRT projection used by the upstream Windows candidate).
+winrt-Windows.Devices.Bluetooth==3.2.1
+winrt-Windows.Devices.Enumeration==3.2.1
+winrt-Windows.Devices.Bluetooth.GenericAttributeProfile==3.2.1
+winrt-Windows.Storage.Streams==3.2.1
+# PCM playback to a user-selected endpoint (VB-CABLE CABLE Input is recommended).
+sounddevice==0.5.1

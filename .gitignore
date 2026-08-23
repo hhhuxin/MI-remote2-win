@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+*.exe
+*.msi
+*.zip
+*.wav
+*.raw
+xiaomi_remote2_mapping.json
