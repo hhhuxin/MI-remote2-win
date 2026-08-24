@@ -7,11 +7,13 @@ user explicitly starts listening.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 import ctypes
 import re
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, StringVar, Tk, Button, PhotoImage, messagebox
 from tkinter import ttk
+from xiaomi_remote2_ble import ATVVVoiceController, PCMOutput
 
 from XiaomiRemote2_Windows import BUTTON_LABELS, REMOTE_BUTTONS, RawInputListener, enumerate_device_paths, _send_key
 
@@ -106,6 +108,9 @@ class RemotePrototypeApp:
         self.device_paths: list[str] = []
         self.held_combos: dict[str, tuple[tuple[int, ...], int | None]] = {}
         self.listener = RawInputListener(self._on_remote_raw, self._on_listener_status)
+        self.voice = ATVVVoiceController(self._on_voice_status)
+        self.voice_status = StringVar(value="语音：未连接")
+        self.audio_var = StringVar(value="请选择音频输出设备")
         self.listening = False
         self.nav_buttons: dict[str, Button] = {}
         self.content: Frame | None = None
@@ -203,6 +208,39 @@ class RemotePrototypeApp:
         Button(controls, text="开始监听", command=self.start_listener, bg=BLUE, activebackground="#006de0", fg="white", relief="flat", bd=0, font=(FONT, 9), padx=7, pady=6).pack(side=LEFT, expand=True, fill=X, padx=(4, 0))
         Button(details, text="停止监听", command=self.stop_listener, bg="#f1f1f4", activebackground="#e3e3e8", fg=MUTED, relief="flat", bd=0, font=(FONT, 9), padx=7, pady=6).pack(fill=X, padx=24, pady=(6, 0))
         self.refresh_devices()
+        self._build_voice_controls(details)
+
+    def _build_voice_controls(self, parent):
+        Frame(parent, bg=LINE, height=1).pack(fill=X, padx=24, pady=20)
+        Label(parent, text="语音输入", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w").pack(fill=X, padx=24)
+        Label(parent, textvariable=self.voice_status, bg=CARD, fg=TEXT, font=(FONT, 9), anchor="w", wraplength=210).pack(fill=X, padx=24, pady=(6, 8))
+        self.audio_combo = ttk.Combobox(parent, textvariable=self.audio_var, state="readonly", width=25)
+        self.audio_combo.pack(fill=X, padx=24, pady=(0, 6))
+        controls = Frame(parent, bg=CARD); controls.pack(fill=X, padx=24)
+        Button(controls, text="刷新音频", command=self.refresh_audio_outputs, bg="#f1f1f4", relief="flat", bd=0, padx=6, pady=5).pack(side=LEFT, expand=True, fill=X, padx=(0, 3))
+        Button(controls, text="连接语音", command=self.connect_voice, bg=BLUE, fg="white", relief="flat", bd=0, padx=6, pady=5).pack(side=LEFT, expand=True, fill=X, padx=(3, 0))
+        self.refresh_audio_outputs()
+
+    def _on_voice_status(self, text):
+        self.root.after(0, lambda: self.voice_status.set(text))
+
+    def refresh_audio_outputs(self):
+        try:
+            names = PCMOutput.list_devices()
+            self.audio_combo["values"] = names
+            preferred = next((n for n in names if n.strip().casefold() == "cable input"), names[0] if names else "")
+            if preferred:
+                self.audio_var.set(preferred); self.voice.output.device_name = preferred
+        except Exception as exc:
+            self.audio_combo["values"] = []
+            self.audio_var.set("未找到音频输出设备")
+            self.voice_status.set(f"语音：音频不可用（{exc}）")
+
+    def connect_voice(self):
+        selected = self.audio_var.get()
+        if selected and not selected.startswith("未") and not selected.startswith("请"):
+            self.voice.output.device_name = selected
+        threading.Thread(target=self.voice.connect, name="xiaomi-voice-connect", daemon=True).start()
 
     def _draw_remote(self, canvas):
         _rounded_rect(canvas, 115, 26, 355, 500, radius=38, fill="#202124", outline="#383a40", width=2)
@@ -274,6 +312,8 @@ class RemotePrototypeApp:
 
     def _on_remote_raw(self, data, edge, button, details):
         if button not in REMOTE_BUTTONS: return
+        if button == "voice" and edge in ("DOWN", "UP"):
+            (self.voice.press if edge == "DOWN" else self.voice.release)()
         self.root.after(0, lambda b=button, e=edge: self._apply_mapping(b, e))
         self.root.after(0, lambda b=button: self.current_button.set(BUTTON_LABELS[b]))
 
@@ -350,7 +390,7 @@ class RemotePrototypeApp:
     def _settings_page(self):
         self._header("设置", "应用外观和原型行为设置。第一阶段暂不连接真实硬件。")
         body = Frame(self.content, bg=BG); body.pack(fill=BOTH, expand=True, padx=42, pady=(0, 32))
-        for title, detail in (("外观", "跟随 Windows 11 浅色外观\n后续可加入深色模式和主题选择"), ("遥控器", "小米遥控器 2 PC\n13 个已确认按键"), ("数据", "映射数据保存在独立结构中\noriginal 与 mapping 分离")):
+        for title, detail in (("外观", "跟随 Windows 11 浅色外观\n后续可加入深色模式和主题选择"), ("遥控器", "小米遥控器 2 PC\n13 个已确认按键"), ("语音输入", "先安装 WinRT BLE、sounddevice 和 VB-CABLE，再在遥控器页选择音频设备并连接语音"), ("数据", "映射数据保存在独立结构中\noriginal 与 mapping 分离")):
             card = self._card(body); card.pack(fill=X, pady=6); Label(card, text=title, bg=CARD, fg=TEXT, font=("Segoe UI", 12, "bold"), anchor="w").pack(fill=X, padx=24, pady=(18, 4)); Label(card, text=detail, bg=CARD, fg=MUTED, font=("Segoe UI", 10), justify="left", anchor="w").pack(fill=X, padx=24, pady=(0, 18))
 
     def save(self):
@@ -359,6 +399,7 @@ class RemotePrototypeApp:
 
     def close(self):
         self.stop_listener()
+        self.voice.close()
         self.root.destroy()
 
 
