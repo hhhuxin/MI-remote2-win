@@ -64,5 +64,6 @@ class IMAADPCMDecoder:
 
 
 def postprocess(samples: list[int]) -> list[int]:
-    """Return decoded PCM samples in the 16-bit range expected by sounddevice."""
-    return [max(-32768, min(32767, int(sample))) for sample in samples]
+    """Apply playback gain and return PCM samples safe for sounddevice."""
+    gain = 2.0
+    return [max(-32768, min(32767, int(sample * gain))) for sample in samples]

@@ -15,7 +15,7 @@ from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, S
 from tkinter import ttk
 from xiaomi_remote2_ble import ATVVVoiceController, PCMOutput
 
-from XiaomiRemote2_Windows import BUTTON_LABELS, REMOTE_BUTTONS, RawInputListener, enumerate_device_paths, _send_key
+from XiaomiRemote2_Windows import BUTTON_LABELS, REMOTE_BUTTONS, RawInputListener, enumerate_device_paths, display_device_path, _send_key
 
 
 BG = "#f5f5f7"
@@ -206,20 +206,48 @@ class RemotePrototypeApp:
         controls = Frame(details, bg=CARD); controls.pack(fill=X, padx=24)
         Button(controls, text="刷新设备", command=self.refresh_devices, bg="#f1f1f4", activebackground="#e3e3e8", fg=TEXT, relief="flat", bd=0, font=(FONT, 9), padx=7, pady=6).pack(side=LEFT, expand=True, fill=X, padx=(0, 4))
         Button(controls, text="开始监听", command=self.start_listener, bg=BLUE, activebackground="#006de0", fg="white", relief="flat", bd=0, font=(FONT, 9), padx=7, pady=6).pack(side=LEFT, expand=True, fill=X, padx=(4, 0))
+        Button(details, text="启动小米遥控器 2", command=self.start_all, bg=BLUE, fg="white", relief="flat", bd=0, padx=7, pady=6).pack(fill=X, padx=24, pady=(6, 0))
         Button(details, text="停止监听", command=self.stop_listener, bg="#f1f1f4", activebackground="#e3e3e8", fg=MUTED, relief="flat", bd=0, font=(FONT, 9), padx=7, pady=6).pack(fill=X, padx=24, pady=(6, 0))
         self.refresh_devices()
         self._build_voice_controls(details)
 
     def _build_voice_controls(self, parent):
         Frame(parent, bg=LINE, height=1).pack(fill=X, padx=24, pady=20)
-        Label(parent, text="语音输入", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w").pack(fill=X, padx=24)
+        Label(parent, text="语音输入（程序选 CABLE Input；麦克风测试选 CABLE Output）", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w", wraplength=230).pack(fill=X, padx=24)
         Label(parent, textvariable=self.voice_status, bg=CARD, fg=TEXT, font=(FONT, 9), anchor="w", wraplength=210).pack(fill=X, padx=24, pady=(6, 8))
         self.audio_combo = ttk.Combobox(parent, textvariable=self.audio_var, state="readonly", width=25)
         self.audio_combo.pack(fill=X, padx=24, pady=(0, 6))
+        self.audio_combo.bind("<<ComboboxSelected>>", self._audio_output_selected)
+        self.input_var = StringVar(value="CABLE Output（系统输入）")
+        self.input_combo = ttk.Combobox(parent, textvariable=self.input_var, state="readonly", width=25)
+        self.input_combo.pack(fill=X, padx=24, pady=(0, 6))
         controls = Frame(parent, bg=CARD); controls.pack(fill=X, padx=24)
         Button(controls, text="刷新音频", command=self.refresh_audio_outputs, bg="#f1f1f4", relief="flat", bd=0, padx=6, pady=5).pack(side=LEFT, expand=True, fill=X, padx=(0, 3))
         Button(controls, text="连接语音", command=self.connect_voice, bg=BLUE, fg="white", relief="flat", bd=0, padx=6, pady=5).pack(side=LEFT, expand=True, fill=X, padx=(3, 0))
         self.refresh_audio_outputs()
+        self.refresh_input_devices()
+
+    def _audio_output_selected(self, _event=None):
+        selected = self.audio_var.get()
+        if selected and not selected.startswith(("未", "请")):
+            self.voice.output.device_name = selected
+
+    def refresh_input_devices(self):
+        try:
+            import sounddevice as sd
+            names = [str(d["name"]) for d in sd.query_devices() if d.get("max_input_channels", 0) > 0]
+            self.input_combo["values"] = names
+            self.input_var.set(next((n for n in names if n.casefold().startswith("cable output")), names[0] if names else "未找到系统输入设备"))
+        except Exception:
+            self.input_combo["values"] = []
+
+    def start_all(self):
+        self.refresh_devices()
+        if len(self.device_paths) == 1:
+            self.device_combo.current(1)
+        self.start_listener()
+        self.refresh_audio_outputs()
+        self.connect_voice()
 
     def _on_voice_status(self, text):
         self.root.after(0, lambda: self.voice_status.set(text))
@@ -228,7 +256,7 @@ class RemotePrototypeApp:
         try:
             names = PCMOutput.list_devices()
             self.audio_combo["values"] = names
-            preferred = next((n for n in names if n.strip().casefold() == "cable input"), names[0] if names else "")
+            preferred = next((n for n in names if n.strip().casefold().startswith("cable input")), names[0] if names else "")
             if preferred:
                 self.audio_var.set(preferred); self.voice.output.device_name = preferred
         except Exception as exc:
@@ -274,7 +302,7 @@ class RemotePrototypeApp:
     def refresh_devices(self):
         try:
             self.device_paths = enumerate_device_paths()
-            values = ["自动选择设备"] + [f"{index + 1}: {path}" for index, path in enumerate(self.device_paths)]
+            values = ["自动选择设备"] + [display_device_path(path, index + 1) for index, path in enumerate(self.device_paths)]
             self.device_combo["values"] = values
             self.device_combo.current(0)
             self.listener_status.set(f"发现 {len(self.device_paths)} 个遥控器设备")

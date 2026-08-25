@@ -82,6 +82,11 @@ def path_matches(path: str) -> bool:
 def normalize_path(path: str) -> str:
     return path.strip().lower()
 
+def display_device_path(path: str, index: int) -> str:
+    """Keep the selector readable while retaining the full path internally."""
+    tail = path.replace("\\", "/").split("/")[-1]
+    return f"{index}: {tail[-72:]}"
+
 
 class RawInputUnavailableError(RuntimeError):
     pass
@@ -273,9 +278,11 @@ class RawInputListener:
             hwnd_message = ctypes.c_void_p(-3)
             self.hwnd = user32.CreateWindowExW(0, class_name, class_name, 0, 0, 0, 0, 0, hwnd_message, None, hinstance, None)
             if not self.hwnd: raise RawInputUnavailableError(f"CreateWindowExW failed: {ctypes.get_last_error()}")
-            # INPUTSINK keeps capture in the background; deliberately omit
-            # RIDEV_NOLEGACY so physical keyboard messages remain untouched.
-            devices = (RAWINPUTDEVICE * 2)(RAWINPUTDEVICE(0x01, 0x06, 0x100, self.hwnd), RAWINPUTDEVICE(0x0C, 0x01, 0x100, self.hwnd))
+            # Keep capture in the background and suppress the duplicate legacy
+            # keyboard event. Mapped output is emitted explicitly by the app.
+            keyboard_flags = 0x100 | 0x30  # RIDEV_INPUTSINK | RIDEV_NOLEGACY
+            consumer_flags = 0x100  # RIDEV_NOLEGACY is invalid for Consumer Control
+            devices = (RAWINPUTDEVICE * 2)(RAWINPUTDEVICE(0x01, 0x06, keyboard_flags, self.hwnd), RAWINPUTDEVICE(0x0C, 0x01, consumer_flags, self.hwnd))
             if not user32.RegisterRawInputDevices(devices, 2, ctypes.sizeof(RAWINPUTDEVICE)): raise RawInputUnavailableError(f"RegisterRawInputDevices failed: {ctypes.get_last_error()}")
             self.status_callback(f"READY path={self.path}")
             msg = wintypes.MSG()
@@ -426,7 +433,7 @@ class XiaomiRemote2App:
         Label(top, textvariable=self.status, fg="#16794c").pack(side=LEFT)
         # Keep a long device path from pushing the action buttons off-screen.
         Label(top, textvariable=self.layer, width=58, anchor="w").pack(side=LEFT, padx=20)
-        for text, cmd in (("开始监听", self.start), ("停止监听", self.stop), ("清空", self.clear), ("BLE诊断", self.ble_inspect), ("保存", self.save)):
+        for text, cmd in (("启动小米遥控器 2", self.start_all), ("开始监听", self.start), ("停止监听", self.stop), ("清空", self.clear), ("BLE诊断", self.ble_inspect), ("保存", self.save)):
             Button(top, text=text, command=cmd).pack(side=RIGHT, padx=3)
 
         device_row = Frame(self.root); device_row.pack(fill=X, padx=8, pady=(0, 4))
@@ -438,15 +445,20 @@ class XiaomiRemote2App:
         info = ttk.LabelFrame(self.root, text="设备"); info.pack(fill=X, padx=8, pady=4)
         Label(info, text="VID 0x2717   PID 0x32B8   支持：Xiaomi Bluetooth Remote 2 / 2 Pro", anchor="w").pack(fill=X, padx=8, pady=4)
 
-        voice = ttk.LabelFrame(self.root, text="语音（按住遥控器语音键说话，松开停止）")
+        voice = ttk.LabelFrame(self.root, text="语音（程序输出选 CABLE Input；麦克风测试选 CABLE Output）")
         voice.pack(fill=X, padx=8, pady=4)
         Label(voice, textvariable=self.voice_status, width=42, anchor="w").pack(side=LEFT, padx=6)
-        Label(voice, text="输出:").pack(side=LEFT)
+        Label(voice, text="程序播放到:").pack(side=LEFT)
         self.audio_combo = ttk.Combobox(voice, textvariable=self.audio_var, state="readonly", width=38)
         self.audio_combo.pack(side=LEFT, padx=6)
         Button(voice, text="刷新音频", command=self.refresh_audio_outputs).pack(side=LEFT, padx=2)
         Button(voice, text="连接语音", command=self.connect_voice).pack(side=LEFT, padx=2)
         self.refresh_audio_outputs()
+        Label(voice, text="系统输入:").pack(side=LEFT, padx=(12, 2))
+        self.input_var = StringVar(value="请选择系统输入设备")
+        self.input_combo = ttk.Combobox(voice, textvariable=self.input_var, state="readonly", width=30)
+        self.input_combo.pack(side=LEFT, padx=2)
+        self.refresh_input_devices()
 
         mapping = ttk.LabelFrame(self.root, text="按键映射（默认输出独立虚拟键，不拦截实体键盘）")
         mapping.pack(fill=X, padx=8, pady=4)
@@ -475,7 +487,7 @@ class XiaomiRemote2App:
         try:
             names = PCMOutput.list_devices()
             self.audio_combo["values"] = names
-            preferred = next((n for n in names if n.strip().casefold() == "cable input"), names[0] if names else "")
+            preferred = next((n for n in names if n.strip().casefold().startswith("cable input")), names[0] if names else "")
             if preferred:
                 self.audio_var.set(preferred); self.voice.output.device_name = preferred
             elif not names:
@@ -484,6 +496,27 @@ class XiaomiRemote2App:
             self.audio_combo["values"] = []
             self.audio_var.set("未安装 sounddevice / VB-CABLE")
             self.voice_status.set(f"BLE 语音：音频不可用（{exc}）")
+
+    def refresh_input_devices(self):
+        try:
+            import sounddevice as sd
+            names = [str(d["name"]) for d in sd.query_devices() if d.get("max_input_channels", 0) > 0]
+            self.input_combo["values"] = names
+            preferred = next((n for n in names if n.strip().casefold().startswith("cable output")), names[0] if names else "")
+            if preferred: self.input_var.set(preferred)
+            elif not names: self.input_var.set("未找到系统输入设备")
+        except Exception as exc:
+            self.input_combo["values"] = []
+            self.input_var.set(f"输入设备不可用：{exc}")
+
+    def start_all(self):
+        """One-click setup for the normal remote + voice workflow."""
+        self.refresh_paths()
+        if len(self.path_values) == 1:
+            self.path_combo.current(1)
+        self.start()
+        self.refresh_audio_outputs()
+        self.connect_voice()
 
     def connect_voice(self):
         selected = self.audio_var.get()
@@ -516,7 +549,7 @@ class XiaomiRemote2App:
     def refresh_paths(self):
         try:
             self.path_values = enumerate_device_paths()
-            labels = [f"{index + 1}: {path}" for index, path in enumerate(self.path_values)]
+            labels = [display_device_path(path, index + 1) for index, path in enumerate(self.path_values)]
             self.path_combo["values"] = ["自动选择（仅连接一个时）"] + labels
             self.path_combo.current(0)
             self.layer.set(f"Raw Input: 检测到 {len(self.path_values)} 个匹配设备")

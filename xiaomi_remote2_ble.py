@@ -11,6 +11,11 @@ from xiaomi_remote2_protocol import *
 
 DEVICE_NAMES = {"mi rc", "xiaomi bluetooth remote 2", "xiaomi bluetooth remote 2 pro", "小米蓝牙语音遥控器"}
 
+def _is_remote_name(name: str) -> bool:
+    """Accept Windows' varying localized/model suffixes; ATVV service is checked later."""
+    value = (name or "").strip().casefold()
+    return value in {n.casefold() for n in DEVICE_NAMES} or ("xiaomi" in value and "remote" in value) or value.startswith("mi rc") or "小米蓝牙" in value
+
 class WinRTUnavailableError(RuntimeError): pass
 
 @dataclass
@@ -37,7 +42,7 @@ async def inspect_paired_remotes() -> list[BLEInspection]:
     result=[]
     for info in infos:
         name=(getattr(info,"name","") or "").strip()
-        if name.casefold() not in {n.casefold() for n in DEVICE_NAMES}: continue
+        if not _is_remote_name(name): continue
         try:
             device=await BluetoothLEDevice.from_id_async(info.id)
             svc_result=await device.get_gatt_services_for_uuid_with_cache_mode_async(uuid.UUID(VOICE_SERVICE_UUID), CacheMode.UNCACHED)
@@ -82,6 +87,9 @@ class PCMOutput:
             import sounddevice as sd
             if not self.device_name:
                 raise VoiceAudioUnavailableError("请先选择语音输出设备（建议选择 CABLE Input）")
+            if self.device_name.strip().casefold().startswith("cable output"):
+                raise VoiceAudioUnavailableError("方向选反了：程序请选择 CABLE Input；Windows 麦克风/测试麦克风请选择 CABLE Output")
+            # Resolve by name at open time; sounddevice handles duplicate endpoint names.
             self.stream = sd.RawOutputStream(samplerate=16000, channels=1, dtype="int16", device=self.device_name, blocksize=0)
             self.stream.start()
         except VoiceAudioUnavailableError:
@@ -116,6 +124,7 @@ class ATVVVoiceController:
         self.version = 0x0100; self.frame_size = 120; self.caps = None
         self.decoder = IMAADPCMDecoder(); self.pending = bytearray(); self.sync = None
         self.mic_open = False; self.output = PCMOutput(); self.connected = False
+        self.audio_frames = 0
 
     def _status(self, text):
         try: self.status_callback(text)
@@ -145,7 +154,7 @@ class ATVVVoiceController:
         BluetoothLEDevice, CacheMode, Status, CCCD, DeviceInformation, DataWriter = _modules()
         selector = BluetoothLEDevice.get_device_selector_from_pairing_state(True)
         infos = await DeviceInformation.find_all_async_aqs_filter(selector)
-        candidates = [i for i in infos if (getattr(i, "name", "") or "").strip().casefold() in {n.casefold() for n in DEVICE_NAMES}]
+        candidates = [i for i in infos if _is_remote_name(getattr(i, "name", ""))]
         if device_id: candidates = [i for i in candidates if getattr(i, "id", "") == device_id]
         if not candidates: raise RuntimeError("未找到已配对的小米蓝牙语音遥控器")
         info = candidates[0]
@@ -191,6 +200,8 @@ class ATVVVoiceController:
 
     def _audio_changed(self, _sender, args):
         if not self.mic_open: return
+        self.audio_frames += 1
+        if self.audio_frames == 1: self._status("语音: 已收到音频数据，正在输出")
         self.pending.extend(bytes(args.characteristic_value))
         while len(self.pending) >= self.frame_size:
             frame = bytes(self.pending[:self.frame_size]); del self.pending[:self.frame_size]
@@ -201,6 +212,7 @@ class ATVVVoiceController:
     def press(self):
         if self.connected:
             try:
+                self.audio_frames = 0
                 if self.output.stream is None: self.output.start()
                 self._call(self._write(mic_open_command(self.version)), 5); self._status("语音: 正在打开麦克风")
             except Exception as exc:
