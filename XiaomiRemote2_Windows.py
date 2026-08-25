@@ -278,11 +278,10 @@ class RawInputListener:
             hwnd_message = ctypes.c_void_p(-3)
             self.hwnd = user32.CreateWindowExW(0, class_name, class_name, 0, 0, 0, 0, 0, hwnd_message, None, hinstance, None)
             if not self.hwnd: raise RawInputUnavailableError(f"CreateWindowExW failed: {ctypes.get_last_error()}")
-            # Keep capture in the background and suppress the duplicate legacy
-            # keyboard event. Mapped output is emitted explicitly by the app.
-            keyboard_flags = 0x100 | 0x30  # RIDEV_INPUTSINK | RIDEV_NOLEGACY
-            consumer_flags = 0x100  # RIDEV_NOLEGACY is invalid for Consumer Control
-            devices = (RAWINPUTDEVICE * 2)(RAWINPUTDEVICE(0x01, 0x06, keyboard_flags, self.hwnd), RAWINPUTDEVICE(0x0C, 0x01, consumer_flags, self.hwnd))
+            # RIDEV_NOLEGACY applies to the entire keyboard usage, not to one
+            # selected device, and would disable the user's physical keyboard.
+            input_sink = 0x100
+            devices = (RAWINPUTDEVICE * 2)(RAWINPUTDEVICE(0x01, 0x06, input_sink, self.hwnd), RAWINPUTDEVICE(0x0C, 0x01, input_sink, self.hwnd))
             if not user32.RegisterRawInputDevices(devices, 2, ctypes.sizeof(RAWINPUTDEVICE)): raise RawInputUnavailableError(f"RegisterRawInputDevices failed: {ctypes.get_last_error()}")
             self.status_callback(f"READY path={self.path}")
             msg = wintypes.MSG()
