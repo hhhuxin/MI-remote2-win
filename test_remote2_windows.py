@@ -1,7 +1,9 @@
 import unittest
-from unittest.mock import patch
+import ctypes
+from unittest.mock import Mock, patch
+import XiaomiRemote2_Windows as remote_windows
 from XiaomiRemote2_Windows import ACTION_VK, DEFAULT_ACTIONS, HID_USAGE_TO_BUTTON, REMOTE_BUTTONS, RawInputListener, _INPUT, path_matches, normalize_path
-from xiaomi_remote2_ui import parse_key_combo, send_combo_down, send_combo_up
+from xiaomi_remote2_ui import RemotePrototypeApp, VOICE_INPUT_COMBO, parse_key_combo, send_combo_down, send_combo_up
 from xiaomi_remote2_protocol import Capabilities, IMAADPCMDecoder, mic_open_command
 
 
@@ -47,6 +49,33 @@ class Remote2IdentityTests(unittest.TestCase):
             combo = parse_key_combo("Ctrl + Win")
             send_combo_down(*combo); send_combo_up(*combo)
         self.assertEqual([call.args for call in send.call_args_list], [(0x11, False), (0x5B, False), (0x5B, True), (0x11, True)])
+
+    def test_voice_down_emits_ctrl_win_shift_once_and_keeps_voice_control(self):
+        app = object.__new__(RemotePrototypeApp)
+        app.root = Mock()
+        app.voice = Mock()
+        app._apply_mapping = Mock()
+        with patch("xiaomi_remote2_ui.send_voice_combo_down") as combo_down, patch("xiaomi_remote2_ui.send_voice_combo_up") as combo_up, patch("xiaomi_remote2_ui.time.sleep") as sleep:
+            app._on_remote_raw(b"", "DOWN", "voice", "")
+            app._on_remote_raw(b"", "REPEAT", "voice", "")
+            app._on_remote_raw(b"", "UP", "voice", "")
+        combo_down.assert_called_once_with(VOICE_INPUT_COMBO)
+        combo_up.assert_called_once_with(VOICE_INPUT_COMBO)
+        sleep.assert_called_once_with(0.1)
+        app.voice.press.assert_called_once_with()
+        app.voice.release.assert_called_once_with()
+        app._apply_mapping.assert_not_called()
+
+    def test_scan_key_injector_marks_win_as_extended_scan_code(self):
+        events = []
+        def capture(_count, pointer, size):
+            item = ctypes.cast(pointer, ctypes.POINTER(remote_windows._INPUT)).contents
+            events.append((item.ki.wVk, item.ki.wScan, item.ki.dwFlags, size))
+            return 1
+        with patch.object(ctypes.windll.user32, "SendInput", side_effect=capture):
+            remote_windows._send_scan_key(0x5B, False)
+            remote_windows._send_scan_key(0x5B, True)
+        self.assertEqual(events, [(0, 0x5B, 0x0009, 40), (0, 0x5B, 0x000B, 40)])
 
     def test_ble_hid_path_variants(self):
         self.assertTrue(path_matches(r"\\?\HID#{00001812}_Dev_VID&012717_PID&32B8_REV&00A4\kbd"))

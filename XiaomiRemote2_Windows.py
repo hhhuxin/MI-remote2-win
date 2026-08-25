@@ -143,6 +143,25 @@ def _send_key(vk: int, released: bool = False, modifiers: tuple[int, ...] = ()) 
             user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(_INPUT))
 
 
+def _send_scan_key(vk: int, released: bool = False) -> None:
+    """Send the selected modifier as a physical keyboard scan code."""
+    if sys.platform != "win32":
+        return
+    scan_codes = {0x10: 0x2A, 0x11: 0x1D, 0x5B: 0x5B}
+    scan = scan_codes.get(vk)
+    if scan is None:
+        raise ValueError(f"unsupported scan-code key: 0x{vk:02X}")
+    user32 = ctypes.windll.user32
+    user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int)
+    user32.SendInput.restype = wintypes.UINT
+    flags = 0x0008 | (0x0001 if vk == 0x5B else 0)  # SCANCODE | EXTENDEDKEY
+    if released:
+        flags |= 0x0002
+    marker = 0x584D5232  # XMR2; no global hook consumes this event.
+    item = _INPUT(type=1, ki=_KEYBDINPUT(0, scan, flags, 0, marker))
+    user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(_INPUT))
+
+
 def _device_name(user32, handle) -> str | None:
     RIDI_DEVICENAME = 0x20000007
     user32.GetRawInputDeviceInfoW.argtypes = (wintypes.HANDLE, wintypes.UINT, wintypes.LPVOID, ctypes.POINTER(wintypes.UINT))
