@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from pathlib import Path
 import ctypes
 import re
@@ -16,7 +15,7 @@ from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, S
 from tkinter import ttk
 from xiaomi_remote2_ble import ATVVVoiceController, PCMOutput
 
-from XiaomiRemote2_Windows import BUTTON_LABELS, REMOTE_BUTTONS, RawInputListener, enumerate_device_paths, display_device_path, _send_key, _send_scan_key
+from XiaomiRemote2_Windows import BUTTON_LABELS, REMOTE_BUTTONS, RawInputListener, enumerate_device_paths, display_device_path, _send_key
 
 
 BG = "#f5f5f7"
@@ -48,8 +47,6 @@ VK_NAMES = {
 VK_NAMES.update({f"f{i}": 0x6F + i for i in range(1, 25)})
 VK_NAMES.update({str(i): 0x30 + i for i in range(10)})
 VK_NAMES.update({chr(ord("a") + i): 0x41 + i for i in range(26)})
-VOICE_INPUT_COMBO = (0x5B, 0x10, 0x11)
-VOICE_INPUT_HOLD_SECONDS = 0.1
 
 
 def parse_key_combo(text: str) -> tuple[tuple[int, ...], int | None]:
@@ -86,16 +83,6 @@ def send_combo_up(modifiers: tuple[int, ...], main: int | None):
         for code in reversed(modifiers): _send_key(code, True)
     else:
         _send_key(main, True, modifiers)
-
-
-def send_voice_combo_down(modifiers: tuple[int, ...]):
-    for code in modifiers:
-        _send_scan_key(code, False)
-
-
-def send_voice_combo_up(modifiers: tuple[int, ...]):
-    for code in reversed(modifiers):
-        _send_scan_key(code, True)
 
 
 def _rounded_rect(canvas: Canvas, x1, y1, x2, y2, radius=14, **kwargs):
@@ -354,13 +341,7 @@ class RemotePrototypeApp:
     def _on_remote_raw(self, data, edge, button, details):
         if button not in REMOTE_BUTTONS: return
         if button == "voice" and edge in ("DOWN", "UP"):
-            if edge == "DOWN":
-                send_voice_combo_down(VOICE_INPUT_COMBO)
-                time.sleep(VOICE_INPUT_HOLD_SECONDS)
-                send_voice_combo_up(VOICE_INPUT_COMBO)
-                self.voice.press()
-            else:
-                self.voice.release()
+            (self.voice.press if edge == "DOWN" else self.voice.release)()
             self.root.after(0, lambda b=button: self.current_button.set(BUTTON_LABELS[b]))
             return
         self.root.after(0, lambda b=button, e=edge: self._apply_mapping(b, e))
