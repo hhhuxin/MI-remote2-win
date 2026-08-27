@@ -154,6 +154,12 @@ class F5Suppressor:
             return user32.CallNextHookEx(None, n_code, w_param, l_param)
         self._hook = HookProc(callback)
         module = kernel32.GetModuleHandleW(None)
+        user32.SetWindowsHookExW.argtypes = (ctypes.c_int, HookProc, wintypes.HINSTANCE, wintypes.DWORD)
+        user32.SetWindowsHookExW.restype = wintypes.HHOOK
+        user32.CallNextHookEx.argtypes = (wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        user32.CallNextHookEx.restype = ctypes.c_ssize_t
+        user32.UnhookWindowsHookEx.argtypes = (wintypes.HHOOK,)
+        user32.UnhookWindowsHookEx.restype = wintypes.BOOL
         handle = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._hook, module, 0)
         if not handle:
             self.status_callback(f"F5 监听失败：{ctypes.get_last_error()}")
