@@ -10,10 +10,13 @@ import json
 import threading
 from pathlib import Path
 import ctypes
+from ctypes import wintypes
 import re
+import sys
+import time
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, StringVar, Tk, Button, PhotoImage, messagebox
 from tkinter import ttk
-from xiaomi_remote2_ble import ATVVVoiceController, PCMOutput
+from xiaomi_remote2_ble import ATVVVoiceController, PCMOutput, list_paired_remotes_sync
 
 from XiaomiRemote2_Windows import BUTTON_LABELS, REMOTE_BUTTONS, RawInputListener, enumerate_device_paths, display_device_path, _send_key
 
@@ -27,6 +30,8 @@ BLUE = "#007aff"
 LINE = "#dedee3"
 GREEN = "#34c759"
 FONT = "Microsoft YaHei UI"
+POWER_LONG_PRESS_MS = 800
+F5_LONG_PRESS_SECONDS = 0.5
 
 VK_NAMES = {
     "ctrl": 0x11, "control": 0x11, "左ctrl": 0xA2, "右ctrl": 0xA3,
@@ -85,6 +90,90 @@ def send_combo_up(modifiers: tuple[int, ...], main: int | None):
         _send_key(main, True, modifiers)
 
 
+def send_combo_tap(modifiers: tuple[int, ...], main: int | None):
+    send_combo_down(modifiers, main)
+    send_combo_up(modifiers, main)
+
+
+def clear_all_text():
+    send_combo_tap((0x11,), 0x41)  # Ctrl+A
+    send_combo_tap((), 0x08)      # Backspace
+
+
+class F5Suppressor:
+    """Global F5 handler matching the AHK short/long-press behavior."""
+    def __init__(self, root, status_callback=None):
+        self.root = root
+        self.status_callback = status_callback or (lambda _text: None)
+        self.thread = None
+        self.stop_event = threading.Event()
+        self.thread_id = None
+        self._hook = None
+        self._down_at = None
+
+    def start(self):
+        if sys.platform != "win32" or (self.thread and self.thread.is_alive()):
+            return
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._run, name="f5-suppressor", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        if self.thread_id and sys.platform == "win32":
+            try: ctypes.windll.user32.PostThreadMessageW(self.thread_id, 0x0012, 0, 0)
+            except Exception: pass
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2)
+        self.thread = None
+
+    def _run(self):
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        self.thread_id = kernel32.GetCurrentThreadId()
+        WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 13, 0x0100, 0x0101, 0x0104, 0x0105
+        LLKHF_INJECTED = 0x10
+        class KBDLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD), ("flags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+        HookProc = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        def callback(n_code, w_param, l_param):
+            if n_code >= 0:
+                event = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                if event.vkCode == 0x74 and not (event.flags & LLKHF_INJECTED):
+                    if self._cloud_active(user32):
+                        return user32.CallNextHookEx(None, n_code, w_param, l_param)
+                    if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN) and self._down_at is None:
+                        self._down_at = time.monotonic()
+                        return 1
+                    if w_param in (WM_KEYUP, WM_SYSKEYUP) and self._down_at is not None:
+                        duration = time.monotonic() - self._down_at
+                        self._down_at = None
+                        if duration < F5_LONG_PRESS_SECONDS:
+                            self.root.after(0, lambda: send_combo_tap((0xA2, 0x5B, 0xA0), None))
+                        return 1
+            return user32.CallNextHookEx(None, n_code, w_param, l_param)
+        self._hook = HookProc(callback)
+        module = kernel32.GetModuleHandleW(None)
+        handle = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._hook, module, 0)
+        if not handle:
+            self.status_callback(f"F5 监听失败：{ctypes.get_last_error()}")
+            return
+        self.status_callback("F5 短按/长按接管已启动")
+        msg = wintypes.MSG()
+        while not self.stop_event.is_set() and user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg)); user32.DispatchMessageW(ctypes.byref(msg))
+        user32.UnhookWindowsHookEx(handle)
+        self.thread_id = None
+
+    @staticmethod
+    def _cloud_active(user32):
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd: return False
+        buffer = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buffer, len(buffer))
+        return buffer.value.casefold() == "redc_wclass_33"
+
+
 def _rounded_rect(canvas: Canvas, x1, y1, x2, y2, radius=14, **kwargs):
     points = [x1 + radius, y1, x2 - radius, y1, x2, y1 + radius, x2, y2 - radius, x2 - radius, y2, x1 + radius, y2, x1, y2 - radius, x1, y1 + radius]
     return canvas.create_polygon(points, smooth=True, **kwargs)
@@ -107,13 +196,19 @@ class RemotePrototypeApp:
         self.mapping_vars: dict[str, StringVar] = {}
         self.device_paths: list[str] = []
         self.held_combos: dict[str, tuple[tuple[int, ...], int | None]] = {}
+        self.power_long_press_job: str | None = None
+        self.power_long_press_triggered = False
         self.listener = RawInputListener(self._on_remote_raw, self._on_listener_status)
         self.voice = ATVVVoiceController(self._on_voice_status)
         self.voice_status = StringVar(value="语音：未连接")
         self.audio_var = StringVar(value="请选择音频输出设备")
+        self.ble_device_var = StringVar(value="正在扫描 BLE 遥控器")
+        self.ble_devices = []
         self.listening = False
         self.nav_buttons: dict[str, Button] = {}
         self.content: Frame | None = None
+        self.f5_suppressor = F5Suppressor(root, lambda text: self.root.after(0, lambda: self.listener_status.set(text)))
+        self.f5_suppressor.start()
         self._setup_style()
         self._build_shell()
         self.show_page("remote")
@@ -215,6 +310,8 @@ class RemotePrototypeApp:
         Frame(parent, bg=LINE, height=1).pack(fill=X, padx=24, pady=20)
         Label(parent, text="语音输入（程序选 CABLE Input；麦克风测试选 CABLE Output）", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w", wraplength=230).pack(fill=X, padx=24)
         Label(parent, textvariable=self.voice_status, bg=CARD, fg=TEXT, font=(FONT, 9), anchor="w", wraplength=210).pack(fill=X, padx=24, pady=(6, 8))
+        self.ble_device_combo = ttk.Combobox(parent, textvariable=self.ble_device_var, state="readonly", width=25)
+        self.ble_device_combo.pack(fill=X, padx=24, pady=(0, 6))
         self.audio_combo = ttk.Combobox(parent, textvariable=self.audio_var, state="readonly", width=25)
         self.audio_combo.pack(fill=X, padx=24, pady=(0, 6))
         self.audio_combo.bind("<<ComboboxSelected>>", self._audio_output_selected)
@@ -222,10 +319,36 @@ class RemotePrototypeApp:
         self.input_combo = ttk.Combobox(parent, textvariable=self.input_var, state="readonly", width=25)
         self.input_combo.pack(fill=X, padx=24, pady=(0, 6))
         controls = Frame(parent, bg=CARD); controls.pack(fill=X, padx=24)
-        Button(controls, text="刷新音频", command=self.refresh_audio_outputs, bg="#f1f1f4", relief="flat", bd=0, padx=6, pady=5).pack(side=LEFT, expand=True, fill=X, padx=(0, 3))
+        Button(controls, text="刷新设备", command=self.refresh_voice_devices, bg="#f1f1f4", relief="flat", bd=0, padx=6, pady=5).pack(side=LEFT, expand=True, fill=X, padx=(0, 3))
         Button(controls, text="连接语音", command=self.connect_voice, bg=BLUE, fg="white", relief="flat", bd=0, padx=6, pady=5).pack(side=LEFT, expand=True, fill=X, padx=(3, 0))
         self.refresh_audio_outputs()
         self.refresh_input_devices()
+        self.refresh_ble_devices()
+
+    def refresh_voice_devices(self):
+        self.refresh_audio_outputs()
+        self.refresh_input_devices()
+        self.refresh_ble_devices()
+
+    def refresh_ble_devices(self):
+        self.ble_device_var.set("正在扫描 BLE 遥控器")
+        def worker():
+            try:
+                devices = list_paired_remotes_sync()
+                self.root.after(0, lambda: self._set_ble_devices(devices))
+            except Exception as exc:
+                self.root.after(0, lambda: self.ble_device_var.set(f"BLE 扫描失败：{exc}"))
+        threading.Thread(target=worker, name="xiaomi-ble-scan", daemon=True).start()
+
+    def _set_ble_devices(self, devices):
+        self.ble_devices = devices
+        values = [f"{device.name} · {device.device_id[-17:]}" for device in devices]
+        self.ble_device_combo["values"] = values
+        if values:
+            self.ble_device_combo.current(0)
+            self.voice_status.set(f"BLE 语音：发现 {len(values)} 个遥控器")
+        else:
+            self.ble_device_var.set("未找到已配对 BLE 遥控器")
 
     def _audio_output_selected(self, _event=None):
         selected = self.audio_var.get()
@@ -268,7 +391,14 @@ class RemotePrototypeApp:
         selected = self.audio_var.get()
         if selected and not selected.startswith("未") and not selected.startswith("请"):
             self.voice.output.device_name = selected
-        threading.Thread(target=self.voice.connect, name="xiaomi-voice-connect", daemon=True).start()
+        index = self.ble_device_combo.current() if hasattr(self, "ble_device_combo") else -1
+        device_id = self.ble_devices[index].device_id if 0 <= index < len(self.ble_devices) else None
+        def worker():
+            try:
+                self.voice.connect(device_id)
+            except Exception as exc:
+                self._on_voice_status(f"BLE 语音：连接失败（{exc}）")
+        threading.Thread(target=worker, name="xiaomi-voice-connect", daemon=True).start()
 
     def _draw_remote(self, canvas):
         _rounded_rect(canvas, 115, 26, 355, 500, radius=38, fill="#202124", outline="#383a40", width=2)
@@ -336,17 +466,31 @@ class RemotePrototypeApp:
         self.listener_status.set("监听已停止")
 
     def _on_listener_status(self, text):
+        self._append_live_log(f"STATUS\t{text}")
         self.root.after(0, lambda: self.listener_status.set(text))
 
     def _on_remote_raw(self, data, edge, button, details):
-        if button not in REMOTE_BUTTONS: return
+        self._append_live_log(f"EVENT\t{edge}\t{button}\t{data.hex(' ').upper()}\t{details}")
+        if button not in REMOTE_BUTTONS:
+            self.root.after(0, lambda e=edge, d=details: self.listener_status.set(f"未识别信号 {e} · {d}"))
+            return
         if button == "voice" and edge in ("DOWN", "UP"):
             (self.voice.press if edge == "DOWN" else self.voice.release)()
         self.root.after(0, lambda b=button, e=edge: self._apply_mapping(b, e))
         self.root.after(0, lambda b=button: self.current_button.set(BUTTON_LABELS[b]))
 
+    def _append_live_log(self, text):
+        try:
+            with Path(__file__).with_name("xiaomi_remote2_live.log").open("a", encoding="utf-8") as log:
+                log.write(text + "\n")
+        except OSError:
+            pass
+
     def _apply_mapping(self, button, edge):
         if edge == "REPEAT": return
+        if button == "power" and self._power_uses_backspace():
+            self._apply_power_backspace(edge)
+            return
         if edge == "DOWN":
             text = self.mapping_vars.get(button, StringVar(value=self.bindings[button]["mapping"])).get()
             try: combo = parse_key_combo(text)
@@ -365,7 +509,39 @@ class RemotePrototypeApp:
                 try: send_combo_up(*combo)
                 except Exception as exc: self.listener_status.set(f"释放映射失败：{exc}")
 
+    def _power_uses_backspace(self):
+        text = self.mapping_vars.get("power", StringVar(value=self.bindings["power"]["mapping"])).get()
+        try:
+            return parse_key_combo(text) == ((), 0x08)
+        except ValueError:
+            return False
+
+    def _apply_power_backspace(self, edge):
+        if edge == "DOWN":
+            if self.power_long_press_job is not None:
+                return
+            self.power_long_press_triggered = False
+            self.power_long_press_job = self.root.after(POWER_LONG_PRESS_MS, self._clear_text_from_power_hold)
+            self.listener_status.set("电源 → 短按删除，长按清空")
+        elif edge == "UP":
+            if self.power_long_press_job is not None:
+                self.root.after_cancel(self.power_long_press_job)
+                self.power_long_press_job = None
+            if not self.power_long_press_triggered:
+                send_combo_tap((), 0x08)
+            self.power_long_press_triggered = False
+
+    def _clear_text_from_power_hold(self):
+        self.power_long_press_job = None
+        self.power_long_press_triggered = True
+        clear_all_text()
+        self.listener_status.set("电源长按 → 已清空文字")
+
     def _release_held(self):
+        if self.power_long_press_job is not None:
+            self.root.after_cancel(self.power_long_press_job)
+            self.power_long_press_job = None
+        self.power_long_press_triggered = False
         for combo in tuple(self.held_combos.values()):
             try: send_combo_up(*combo)
             except Exception: pass
@@ -427,6 +603,7 @@ class RemotePrototypeApp:
 
     def close(self):
         self.stop_listener()
+        self.f5_suppressor.stop()
         self.voice.close()
         self.root.destroy()
 

@@ -25,6 +25,21 @@ class BLEInspection:
     status: str
     services: list[dict]
 
+@dataclass
+class PairedRemote:
+    name: str
+    device_id: str
+
+async def list_paired_remotes() -> list[PairedRemote]:
+    BluetoothLEDevice, _CacheMode, _Status, _CCCD, DeviceInformation, _DataWriter = _modules()
+    selector = BluetoothLEDevice.get_device_selector_from_pairing_state(True)
+    infos = await DeviceInformation.find_all_async_aqs_filter(selector)
+    return [PairedRemote((getattr(info, "name", "") or "").strip(), info.id)
+            for info in infos if _is_remote_name(getattr(info, "name", ""))]
+
+def list_paired_remotes_sync() -> list[PairedRemote]:
+    return asyncio.run(list_paired_remotes())
+
 def _modules():
     try:
         from winrt.windows.devices.bluetooth import BluetoothLEDevice, BluetoothCacheMode
@@ -157,6 +172,8 @@ class ATVVVoiceController:
         candidates = [i for i in infos if _is_remote_name(getattr(i, "name", ""))]
         if device_id: candidates = [i for i in candidates if getattr(i, "id", "") == device_id]
         if not candidates: raise RuntimeError("未找到已配对的小米蓝牙语音遥控器")
+        if device_id is None and len(candidates) > 1:
+            raise RuntimeError("检测到多个小米遥控器，请先选择 BLE 语音设备")
         info = candidates[0]
         self._status(f"BLE: 正在连接 {getattr(info, 'name', '')}")
         self.device = await BluetoothLEDevice.from_id_async(info.id)

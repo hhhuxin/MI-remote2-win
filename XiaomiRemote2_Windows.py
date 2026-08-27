@@ -40,7 +40,8 @@ BUTTON_BY_VKEY = {
 BUTTON_BY_MAKE = {0x6A: "back", 0x5E: "power", 0x30: "volume_plus", 0x2E: "volume_minus", 0x20: "mute"}
 HID_USAGE_TO_BUTTON = {
     0x66: "power", 0x3E: "voice", 0x52: "up", 0x51: "down", 0x50: "left", 0x4F: "right",
-    0x28: "ok", 0xF1: "back", 0x80: "volume_plus", 0x81: "volume_minus", 0x4A: "home", 0x65: "menu", 0x35: "tv",
+    0x28: "ok", 0x29: "back", 0xF1: "back", 0x0224: "back",
+    0x80: "volume_plus", 0x81: "volume_minus", 0x4A: "home", 0x65: "menu", 0x35: "tv",
 }
 
 # These outputs are intentionally unused function keys. The app never hooks or
@@ -67,6 +68,8 @@ ACTION_VK.update({f"F{i}": 0x6F + i for i in range(1, 13)})
 ACTION_VK.update({"ESC": 0x1B, "TAB": 0x09, "SPACE": 0x20, "DELETE": 0x2E, "INSERT": 0x2D, "PAGE_UP": 0x21, "PAGE_DOWN": 0x22, "APPS": 0x5D, "BROWSER_BACK": 0xA6, "MEDIA_NEXT": 0xB0, "MEDIA_PREVIOUS": 0xB1})
 ACTION_LABELS.update({f"F{i}": f"键盘 F{i}" for i in range(1, 13)})
 ACTION_LABELS.update({"ESC": "键盘 Esc", "TAB": "键盘 Tab", "SPACE": "键盘 Space", "DELETE": "键盘 Delete", "INSERT": "键盘 Insert", "PAGE_UP": "键盘 PageUp", "PAGE_DOWN": "键盘 PageDown", "APPS": "键盘菜单键", "BROWSER_BACK": "键盘浏览器返回", "MEDIA_NEXT": "媒体下一首", "MEDIA_PREVIOUS": "媒体上一首"})
+ACTION_LABELS["KEY_1"] = "键盘数字 1"
+ACTION_VK["KEY_1"] = 0x31
 DEFAULT_ACTIONS = {button: f"F{13 + index}" for index, button in enumerate(REMOTE_BUTTONS[:12])}
 DEFAULT_ACTIONS["tv"] = "REMOTE_TV"
 DEFAULT_ACTIONS["voice"] = "VOICE"
@@ -186,10 +189,13 @@ class RawInputListener:
         self._hid_pressed: set[str] = set()
         self._preparsed_cache: dict[int, ctypes.Array] = {}
         self.thread_id = None
+        self.capture_all = os.environ.get("XMR2_CAPTURE_ALL") == "1"
 
     def start(self, selected_path: str | None = None):
         if self.running: raise RawInputUnavailableError("Raw Input listener already running")
         paths = enumerate_device_paths()
+        if self.capture_all:
+            paths = []
         if len(paths) == 0:
             # Some Windows BLE HID stacks do not expose the collection through
             # GetRawInputDeviceList until a registration exists. Register
@@ -309,11 +315,14 @@ class RawInputListener:
         buf = ctypes.create_string_buffer(size.value)
         if user32.GetRawInputData(lparam, 0x10000003, buf, ctypes.byref(size), header_size) != size.value: return
         header = header_type.from_buffer_copy(buf, 0); path = _device_name(user32, header.hDevice)
-        if not path or not path_matches(path): return
-        if self.path is None:
-            self.path = path
-            self.status_callback(f"BOUND path={path}")
-        if normalize_path(path) != normalize_path(self.path): return
+        if not path or (not self.capture_all and not path_matches(path)): return
+        if self.capture_all:
+            self.callback(b"", "DIAGNOSTIC", "UNKNOWN", f"path={path} raw_type={header.dwType}")
+        else:
+            if self.path is None:
+                self.path = path
+                self.status_callback(f"BOUND path={path}")
+            if normalize_path(path) != normalize_path(self.path): return
         body = bytes(buf.raw[header_size:size.value])
         if header.dwType == 1 and len(body) >= 16:
             make, flags, _reserved, vkey, message, extra = struct.unpack_from("<HHHHII", body, 0)
@@ -588,6 +597,12 @@ class XiaomiRemote2App:
     def on_status(self, text): self.root.after(0, lambda: self.layer.set(f"Raw Input: {text}"))
     def on_raw(self, data, edge, button, details):
         event = self.recorder.add("RAW_INPUT", data, event_type=edge, details=details, report_id="")
+        try:
+            log_path = Path(__file__).with_name("xiaomi_remote2_live.log")
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"{event.timestamp}\t{edge}\t{button}\t{data.hex(' ').upper()}\t{details}\n")
+        except OSError:
+            pass
         if button in REMOTE_BUTTONS:
             if button == "voice" and self.mapping.get("voice") == "VOICE":
                 self.voice_edge(edge)
