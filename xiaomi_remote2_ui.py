@@ -397,9 +397,11 @@ class RemotePrototypeApp:
         try:
             names = PCMOutput.list_devices()
             self.audio_combo["values"] = names
-            preferred = next((n for n in names if n.strip().casefold().startswith("cable input")), names[0] if names else "")
+            preferred = next((n for n in names if n.strip().casefold().startswith(("m 110 stereo", "扬声器", "speakers"))), None)
+            preferred = preferred or next((n for n in names if n.strip().casefold().startswith("cable input")), names[0] if names else "")
             if preferred:
                 self.audio_var.set(preferred); self.voice.output.device_name = preferred
+                self.voice_status.set(f"语音：输出到 {preferred}")
         except Exception as exc:
             self.audio_combo["values"] = []
             self.audio_var.set("未找到音频输出设备")
