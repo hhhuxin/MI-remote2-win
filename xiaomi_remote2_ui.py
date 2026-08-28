@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+import queue
 from pathlib import Path
 import ctypes
 from ctypes import wintypes
@@ -213,8 +214,10 @@ class RemotePrototypeApp:
         self.listening = False
         self.nav_buttons: dict[str, Button] = {}
         self.content: Frame | None = None
-        self.f5_suppressor = F5Suppressor(root, lambda text: self.root.after(0, lambda: self.listener_status.set(text)))
+        self.f5_status_queue = queue.Queue()
+        self.f5_suppressor = F5Suppressor(root, self.f5_status_queue.put)
         self.f5_suppressor.start()
+        self.root.after(100, self._poll_f5_status)
         self._setup_style()
         self._build_shell()
         self.show_page("remote")
@@ -225,6 +228,15 @@ class RemotePrototypeApp:
         try: style.theme_use("clam")
         except Exception: pass
         style.configure("Prototype.TScrollbar", troughcolor=BG, background="#c7c7cc", bordercolor=BG, arrowcolor=MUTED)
+
+    def _poll_f5_status(self):
+        try:
+            while True:
+                self.listener_status.set(self.f5_status_queue.get_nowait())
+        except queue.Empty:
+            pass
+        if self.root.winfo_exists():
+            self.root.after(100, self._poll_f5_status)
 
     def _load_bindings(self):
         originals = {button: BUTTON_LABELS[button] for button in REMOTE_BUTTONS}
