@@ -175,13 +175,31 @@ class ATVVVoiceController:
         if device_id is None and len(candidates) > 1:
             raise RuntimeError("检测到多个小米遥控器，请先选择 BLE 语音设备")
         info = candidates[0]
-        self._status(f"BLE: 正在连接 {getattr(info, 'name', '')}")
-        self.device = await BluetoothLEDevice.from_id_async(info.id)
-        result = await self.device.get_gatt_services_for_uuid_with_cache_mode_async(uuid.UUID(VOICE_SERVICE_UUID), CacheMode.UNCACHED)
-        if result.status != Status.SUCCESS or not result.services: raise RuntimeError("未找到 ATVV 语音服务")
-        self.service = result.services[0]
-        chars_result = await self.service.get_characteristics_with_cache_mode_async(CacheMode.UNCACHED)
-        if chars_result.status != Status.SUCCESS: raise RuntimeError("ATVV 特征发现失败")
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                self._status(f"BLE: 正在连接 {getattr(info, 'name', '')}（第 {attempt}/3 次）")
+                self.device = await BluetoothLEDevice.from_id_async(info.id)
+                result = await self.device.get_gatt_services_for_uuid_with_cache_mode_async(uuid.UUID(VOICE_SERVICE_UUID), CacheMode.UNCACHED)
+                if result.status != Status.SUCCESS or not result.services:
+                    raise RuntimeError(f"ATVV 服务不可用（状态 {result.status}）")
+                self.service = result.services[0]
+                chars_result = await self.service.get_characteristics_with_cache_mode_async(CacheMode.UNCACHED)
+                if chars_result.status != Status.SUCCESS:
+                    raise RuntimeError(f"ATVV 特征发现失败（状态 {chars_result.status}）")
+                break
+            except Exception as exc:
+                last_error = exc
+                for item in (self.service, self.device):
+                    try:
+                        if item is not None: item.close()
+                    except Exception: pass
+                self.service = self.device = None
+                if attempt < 3:
+                    self._status(f"BLE: 设备尚未就绪，{2} 秒后自动重试")
+                    await asyncio.sleep(2)
+        else:
+            raise RuntimeError(f"BLE 连接失败：{last_error}。请唤醒遥控器后再试")
         by_uuid = {str(c.uuid).casefold(): c for c in chars_result.characteristics}
         self.tx = by_uuid.get(VOICE_TX_UUID.casefold()); self.audio = by_uuid.get(VOICE_AUDIO_UUID.casefold()); self.control = by_uuid.get(VOICE_CONTROL_UUID.casefold())
         if not all((self.tx, self.audio, self.control)): raise RuntimeError("ATVV 音频/控制特征不完整")
