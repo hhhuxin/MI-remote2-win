@@ -326,7 +326,7 @@ class RemotePrototypeApp:
 
     def _build_voice_controls(self, parent):
         Frame(parent, bg=LINE, height=1).pack(fill=X, padx=24, pady=20)
-        Label(parent, text="语音输入（程序选 CABLE Input；麦克风测试选 CABLE Output）", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w", wraplength=230).pack(fill=X, padx=24)
+        Label(parent, text="语音路由：程序输出 CABLE Input；录音软件选择 CABLE Output", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w", wraplength=230).pack(fill=X, padx=24)
         Label(parent, textvariable=self.voice_status, bg=CARD, fg=TEXT, font=(FONT, 9), anchor="w", wraplength=210).pack(fill=X, padx=24, pady=(6, 8))
         self.ble_device_combo = ttk.Combobox(parent, textvariable=self.ble_device_var, state="readonly", width=25)
         self.ble_device_combo.pack(fill=X, padx=24, pady=(0, 6))
@@ -397,8 +397,7 @@ class RemotePrototypeApp:
         try:
             names = PCMOutput.list_devices()
             self.audio_combo["values"] = names
-            preferred = next((n for n in names if n.strip().casefold().startswith(("m 110 stereo", "扬声器", "speakers"))), None)
-            preferred = preferred or next((n for n in names if n.strip().casefold().startswith("cable input")), names[0] if names else "")
+            preferred = next((n for n in names if n.strip().casefold().startswith("cable input")), names[0] if names else "")
             if preferred:
                 self.audio_var.set(preferred); self.voice.output.device_name = preferred
                 self.voice_status.set(f"语音：输出到 {preferred}")
