@@ -7,10 +7,12 @@ user explicitly starts listening.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from pathlib import Path
 import ctypes
 import re
+import winreg
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, StringVar, Tk, Toplevel, Button, PhotoImage, messagebox
 from tkinter import ttk
 from xiaomi_remote2_ble import ATVVVoiceController, PCMOutput
@@ -27,6 +29,8 @@ BLUE = "#007aff"
 LINE = "#dedee3"
 GREEN = "#34c759"
 FONT = "Microsoft YaHei UI"
+STARTUP_REGISTRY_VALUE = "XiaomiRemote2PC"
+POWER_LONG_PRESS_MS = 900
 
 VK_NAMES = {
     "ctrl": 0x11, "control": 0x11, "左ctrl": 0xA2, "右ctrl": 0xA3,
@@ -75,6 +79,19 @@ def display_mapping_name(mapping: str) -> str:
     """Return a readable label while retaining the original persisted string."""
     normalized = mapping.strip().casefold().replace(" ", "_")
     return MAPPING_DISPLAY_NAMES.get(normalized, mapping)
+
+
+def register_startup() -> None:
+    """Register the packaged app for the current user's Windows sign-in."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    try:
+        command = f'"{Path(sys.executable).resolve()}"'
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, STARTUP_REGISTRY_VALUE, 0, winreg.REG_SZ, command)
+    except OSError:
+        # Startup registration is optional; the application remains usable.
+        pass
 
 
 def parse_key_combo(text: str) -> tuple[tuple[int, ...], int | None]:
@@ -135,6 +152,9 @@ class RemotePrototypeApp:
         self.mapping_vars: dict[str, StringVar] = {}
         self.device_paths: list[str] = []
         self.held_combos: dict[str, tuple[tuple[int, ...], int | None]] = {}
+        self.power_long_press_job = None
+        self.power_long_press_fired = False
+        self.power_pressed = False
         self.listener = RawInputListener(self._on_remote_raw, self._on_listener_status)
         self.voice = ATVVVoiceController(self._on_voice_status)
         self.voice_status = StringVar(value="语音：未连接")
@@ -372,8 +392,41 @@ class RemotePrototypeApp:
             (self.voice.press if edge == "DOWN" else self.voice.release)()
             self.root.after(0, lambda b=button: self.current_button.set(BUTTON_LABELS[b]))
             return
+        if button == "power":
+            self.root.after(0, lambda e=edge: self._handle_power_edge(e))
+            self.root.after(0, lambda b=button: self.current_button.set(BUTTON_LABELS[b]))
+            return
         self.root.after(0, lambda b=button, e=edge: self._apply_mapping(b, e))
         self.root.after(0, lambda b=button: self.current_button.set(BUTTON_LABELS[b]))
+
+    def _handle_power_edge(self, edge):
+        if edge == "DOWN":
+            if self.power_long_press_job is None:
+                self.power_pressed = True
+                self.power_long_press_fired = False
+                self.power_long_press_job = self.root.after(POWER_LONG_PRESS_MS, self._power_long_press)
+        elif edge == "UP":
+            if not self.power_pressed:
+                return
+            self.power_pressed = False
+            if self.power_long_press_job is not None:
+                self.root.after_cancel(self.power_long_press_job)
+                self.power_long_press_job = None
+            if not self.power_long_press_fired:
+                self._apply_mapping("power", "DOWN")
+                self._apply_mapping("power", "UP")
+
+    def _power_long_press(self):
+        self.power_long_press_job = None
+        self.power_long_press_fired = True
+        try:
+            _send_key(0x41, False, (0x11,))
+            _send_key(0x41, True, (0x11,))
+            _send_key(0x2E, False)
+            _send_key(0x2E, True)
+            self.listener_status.set("电源键长按：已发送 Ctrl+A 和 Delete")
+        except Exception as exc:
+            self.listener_status.set(f"电源键长按删除失败：{exc}")
 
     def _apply_mapping(self, button, edge):
         if edge == "REPEAT": return
@@ -396,6 +449,11 @@ class RemotePrototypeApp:
                 except Exception as exc: self.listener_status.set(f"释放映射失败：{exc}")
 
     def _release_held(self):
+        if self.power_long_press_job is not None:
+            self.root.after_cancel(self.power_long_press_job)
+            self.power_long_press_job = None
+        self.power_long_press_fired = False
+        self.power_pressed = False
         for combo in tuple(self.held_combos.values()):
             try: send_combo_up(*combo)
             except Exception: pass
@@ -501,6 +559,7 @@ class RemotePrototypeApp:
 
 
 def main():
+    register_startup()
     root = Tk()
     RemotePrototypeApp(root)
     root.mainloop()
