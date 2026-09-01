@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 import ctypes
 import re
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, StringVar, Tk, Button, PhotoImage, messagebox
+from tkinter import BOTH, END, LEFT, RIGHT, X, Y, Canvas, Entry, Frame, Label, StringVar, Tk, Toplevel, Button, PhotoImage, messagebox
 from tkinter import ttk
 from xiaomi_remote2_ble import ATVVVoiceController, PCMOutput
 
@@ -47,6 +47,34 @@ VK_NAMES = {
 VK_NAMES.update({f"f{i}": 0x6F + i for i in range(1, 25)})
 VK_NAMES.update({str(i): 0x30 + i for i in range(10)})
 VK_NAMES.update({chr(ord("a") + i): 0x41 + i for i in range(26)})
+
+
+# The values remain the parser's existing mapping strings.  These labels only
+# make the mapping page easier to scan and do not alter keyboard injection.
+MAPPING_DISPLAY_NAMES = {
+    "up": "↑", "上": "↑", "down": "↓", "下": "↓", "left": "←", "左": "←", "right": "→", "右": "→",
+    "enter": "Enter", "return": "Enter", "确定": "Enter",
+    "backspace": "Backspace", "退格": "Backspace", "delete": "Delete", "tab": "Tab",
+    "space": "Space", "空格": "Space", "escape": "Escape", "esc": "Escape",
+    "home": "Home", "主页": "Home", "end": "End", "pageup": "Page Up", "pagedown": "Page Down", "insert": "Insert",
+    "volume_up": "音量+", "volume+": "音量+", "音量+": "音量+",
+    "volume_down": "音量-", "volume-": "音量-", "音量-": "音量-", "mute": "静音", "静音": "静音",
+}
+
+MAPPING_PRESET_GROUPS = (
+    ("字母", [(letter, letter) for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]),
+    ("数字", [(number, number) for number in "0123456789"]),
+    ("功能键", [(f"F{number}", f"F{number}") for number in range(1, 25)]),
+    ("方向键", [("↑", "Up"), ("↓", "Down"), ("←", "Left"), ("→", "Right")]),
+    ("常用按键", [("Enter", "Enter"), ("Backspace", "Backspace"), ("Delete", "Delete"), ("Tab", "Tab"), ("Space", "Space"), ("Escape", "Escape"), ("Home", "Home"), ("End", "End"), ("Page Up", "PageUp"), ("Page Down", "PageDown"), ("Insert", "Insert")]),
+    ("媒体/系统", [("音量+", "Volume_Up"), ("音量-", "Volume_Down"), ("静音", "Mute")]),
+)
+
+
+def display_mapping_name(mapping: str) -> str:
+    """Return a readable label while retaining the original persisted string."""
+    normalized = mapping.strip().casefold().replace(" ", "_")
+    return MAPPING_DISPLAY_NAMES.get(normalized, mapping)
 
 
 def parse_key_combo(text: str) -> tuple[tuple[int, ...], int | None]:
@@ -213,7 +241,7 @@ class RemotePrototypeApp:
 
     def _build_voice_controls(self, parent):
         Frame(parent, bg=LINE, height=1).pack(fill=X, padx=24, pady=20)
-        Label(parent, text="语音输入（程序选 CABLE Input；麦克风测试选 CABLE Output）", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w", wraplength=230).pack(fill=X, padx=24)
+        Label(parent, text="语音输入（程序选 CABLE Input / CABLE In；录音选 CABLE Output）", bg=CARD, fg=MUTED, font=(FONT, 10), anchor="w", wraplength=230).pack(fill=X, padx=24)
         Label(parent, textvariable=self.voice_status, bg=CARD, fg=TEXT, font=(FONT, 9), anchor="w", wraplength=210).pack(fill=X, padx=24, pady=(6, 8))
         self.audio_combo = ttk.Combobox(parent, textvariable=self.audio_var, state="readonly", width=25)
         self.audio_combo.pack(fill=X, padx=24, pady=(0, 6))
@@ -256,7 +284,7 @@ class RemotePrototypeApp:
         try:
             names = PCMOutput.list_devices()
             self.audio_combo["values"] = names
-            preferred = next((n for n in names if n.strip().casefold().startswith("cable input")), names[0] if names else "")
+            preferred = PCMOutput.preferred_device(names)
             if preferred:
                 self.audio_var.set(preferred); self.voice.output.device_name = preferred
         except Exception as exc:
@@ -376,14 +404,14 @@ class RemotePrototypeApp:
     def _mapping_page(self):
         self._header("按键映射", "自定义遥控器上的按键行为。原始按键保持不变，你可以为每个按键指定新的操作。")
         outer = Frame(self.content, bg=BG)
-        outer.pack(fill=BOTH, expand=True, padx=42, pady=(0, 32))
+        outer.pack(fill=BOTH, expand=True, padx=42, pady=(0, 20))
         card = self._card(outer); card.pack(fill=BOTH, expand=True)
-        top = Frame(card, bg=CARD); top.pack(fill=X, padx=26, pady=(22, 12))
-        Label(top, text="原始功能", bg=CARD, fg=MUTED, font=(FONT, 9, "bold"), width=25, anchor="w").pack(side=LEFT)
-        Label(top, text="自定义功能", bg=CARD, fg=MUTED, font=(FONT, 9, "bold"), width=38, anchor="w").pack(side=LEFT)
-        Label(top, text="恢复", bg=CARD, fg=MUTED, font=(FONT, 9, "bold"), anchor="w").pack(side=RIGHT, padx=8)
+        top = Frame(card, bg=CARD); top.pack(fill=X, padx=26, pady=(18, 8))
+        Label(top, text="原始按键", bg=CARD, fg=MUTED, font=(FONT, 9, "bold"), width=20, anchor="w").pack(side=LEFT)
+        Label(top, text="当前映射", bg=CARD, fg=MUTED, font=(FONT, 9, "bold"), anchor="w").pack(side=LEFT, fill=X, expand=True)
+        Label(top, text="操作", bg=CARD, fg=MUTED, font=(FONT, 9, "bold"), width=17, anchor="center").pack(side=RIGHT)
         Frame(card, bg=LINE, height=1).pack(fill=X, padx=26)
-        scroll_host = Frame(card, bg=CARD); scroll_host.pack(fill=BOTH, expand=True, padx=20, pady=(6, 4))
+        scroll_host = Frame(card, bg=CARD); scroll_host.pack(fill=BOTH, expand=True, padx=26, pady=(4, 4))
         scroll_canvas = Canvas(scroll_host, bg=CARD, highlightthickness=0)
         scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=scroll_canvas.yview)
         scroll_canvas.configure(yscrollcommand=scrollbar.set)
@@ -394,25 +422,64 @@ class RemotePrototypeApp:
         scroll_canvas.bind("<Configure>", lambda event: scroll_canvas.itemconfigure(window_id, width=event.width))
         scroll_canvas.bind_all("<MouseWheel>", lambda event: scroll_canvas.yview_scroll(int(-event.delta / 120), "units") if self.page == "mapping" else None)
         self.mapping_vars = {}
+        self.mapping_display_vars = {}
         for button in REMOTE_BUTTONS:
-            row = Frame(rows, bg=CARD, height=42); row.pack(fill=X, pady=2); row.pack_propagate(False)
-            Label(row, text=self.bindings[button]["original"], bg=CARD, fg=TEXT, font=(FONT, 10), width=25, anchor="w").pack(side=LEFT)
+            row = Frame(rows, bg=CARD, height=38); row.pack(fill=X); row.pack_propagate(False)
+            Label(row, text=self.bindings[button]["original"], bg=CARD, fg=TEXT, font=(FONT, 10), width=20, anchor="w").pack(side=LEFT)
             var = StringVar(value=self.bindings[button]["mapping"]); self.mapping_vars[button] = var
-            entry = Entry(row, textvariable=var, bg="#fafafa", fg=TEXT, insertbackground=BLUE, relief="flat", highlightthickness=1, highlightbackground=LINE, highlightcolor=BLUE, font=(FONT, 10))
-            entry.pack(side=LEFT, fill=X, expand=True, padx=(0, 18), ipady=7)
-            entry.bind("<KeyRelease>", lambda _event, b=button: self._mapping_changed(b))
-            Button(row, text="恢复默认", command=lambda b=button: self._reset_mapping(b), bg="#f2f2f5", activebackground="#e3e3e8", fg=MUTED, relief="flat", bd=0, padx=10, pady=5, font=(FONT, 9), cursor="hand2").pack(side=RIGHT)
-        bottom = Frame(card, bg=CARD); bottom.pack(fill=X, padx=26, pady=(4, 20))
-        Label(bottom, text="修改只影响右侧自定义功能，左侧原始功能不会变化。", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w").pack(side=LEFT)
+            shown = StringVar(value=display_mapping_name(var.get())); self.mapping_display_vars[button] = shown
+            Label(row, textvariable=shown, bg=CARD, fg=TEXT, font=(FONT, 10), anchor="w").pack(side=LEFT, fill=X, expand=True)
+            Button(row, text="恢复默认", command=lambda b=button: self._reset_mapping(b), bg="#f2f2f5", activebackground="#e3e3e8", fg=MUTED, relief="flat", bd=0, padx=8, pady=4, font=(FONT, 9), cursor="hand2").pack(side=RIGHT, padx=(6, 0))
+            Button(row, text="修改", command=lambda b=button: self._open_mapping_picker(b), bg="#f2f2f5", activebackground="#e3e3e8", fg=TEXT, relief="flat", bd=0, padx=12, pady=4, font=(FONT, 9), cursor="hand2").pack(side=RIGHT)
+            Frame(rows, bg="#f3f3f6", height=1).pack(fill=X)
+        bottom = Frame(card, bg=CARD); bottom.pack(fill=X, padx=26, pady=(4, 16))
+        Label(bottom, text="选择常用按键，或使用自定义输入保留组合键和特殊按键。", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w").pack(side=LEFT)
         Button(bottom, text="保存映射", command=self.save, bg="#f1f1f4", activebackground="#e3e3e8", fg=TEXT, relief="flat", bd=0, padx=14, pady=7, font=(FONT, 9), cursor="hand2").pack(side=RIGHT, padx=(0, 8))
         Button(bottom, text="恢复全部默认", command=self._reset_all, bg=BLUE, fg="white", activebackground="#006de0", relief="flat", bd=0, padx=14, pady=7, font=(FONT, 9), cursor="hand2").pack(side=RIGHT)
 
     def _mapping_changed(self, button):
         self.bindings[button]["mapping"] = self.mapping_vars[button].get()
 
+    def _set_mapping(self, button, mapping):
+        self.mapping_vars[button].set(mapping)
+        self.mapping_display_vars[button].set(display_mapping_name(mapping))
+        self.bindings[button]["mapping"] = mapping
+
+    def _open_mapping_picker(self, button):
+        picker = Toplevel(self.root)
+        picker.title(f"修改映射 - {self.bindings[button]['original']}")
+        picker.configure(bg=CARD)
+        picker.resizable(False, False)
+        picker.transient(self.root)
+        picker.grab_set()
+        Label(picker, text=f"{self.bindings[button]['original']} 的当前映射", bg=CARD, fg=TEXT, font=(FONT, 12, "bold"), anchor="w").pack(fill=X, padx=22, pady=(18, 2))
+        Label(picker, text="选择一个常用按键，或在下方直接输入现有系统支持的按键名称。", bg=CARD, fg=MUTED, font=(FONT, 9), anchor="w").pack(fill=X, padx=22, pady=(0, 12))
+        choices = Frame(picker, bg=CARD); choices.pack(fill=X, padx=22)
+        for index, (group, values) in enumerate(MAPPING_PRESET_GROUPS):
+            section = Frame(choices, bg=CARD)
+            section.grid(row=index // 2, column=index % 2, sticky="new", padx=(0, 16) if index % 2 == 0 else (0, 0), pady=(0, 10))
+            choices.grid_columnconfigure(index % 2, weight=1)
+            Label(section, text=group, bg=CARD, fg=MUTED, font=(FONT, 9, "bold"), anchor="w").pack(fill=X, pady=(0, 4))
+            buttons = Frame(section, bg=CARD); buttons.pack(fill=X)
+            for value_index, (label, mapping) in enumerate(values):
+                Button(buttons, text=label, command=lambda m=mapping: self._choose_mapping(button, m, picker), bg="#f2f2f5", activebackground="#e3e3e8", fg=TEXT, relief="flat", bd=0, width=10, pady=3, font=(FONT, 9), cursor="hand2").grid(row=value_index // 4, column=value_index % 4, padx=(0, 4), pady=(0, 4), sticky="ew")
+        Frame(picker, bg=LINE, height=1).pack(fill=X, padx=22, pady=(2, 12))
+        custom = StringVar(value=self.mapping_vars[button].get())
+        custom_row = Frame(picker, bg=CARD); custom_row.pack(fill=X, padx=22, pady=(0, 18))
+        Label(custom_row, text="自定义输入", bg=CARD, fg=TEXT, font=(FONT, 9, "bold"), width=11, anchor="w").pack(side=LEFT)
+        entry = Entry(custom_row, textvariable=custom, bg="#fafafa", fg=TEXT, insertbackground=BLUE, relief="flat", highlightthickness=1, highlightbackground=LINE, highlightcolor=BLUE, font=(FONT, 10))
+        entry.pack(side=LEFT, fill=X, expand=True, ipady=6)
+        Button(custom_row, text="应用", command=lambda: self._choose_mapping(button, custom.get(), picker), bg=BLUE, activebackground="#006de0", fg="white", relief="flat", bd=0, padx=12, pady=5, font=(FONT, 9), cursor="hand2").pack(side=RIGHT, padx=(8, 0))
+        entry.focus_set()
+        entry.selection_range(0, END)
+        entry.bind("<Return>", lambda _event: self._choose_mapping(button, custom.get(), picker))
+
+    def _choose_mapping(self, button, mapping, picker):
+        self._set_mapping(button, mapping.strip())
+        picker.destroy()
+
     def _reset_mapping(self, button):
-        self.mapping_vars[button].set(self.bindings[button]["original"])
-        self.bindings[button]["mapping"] = self.bindings[button]["original"]
+        self._set_mapping(button, self.bindings[button]["original"])
 
     def _reset_all(self):
         for button in REMOTE_BUTTONS: self._reset_mapping(button)

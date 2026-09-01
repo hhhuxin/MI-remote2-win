@@ -5,9 +5,14 @@ import XiaomiRemote2_Windows as remote_windows
 from XiaomiRemote2_Windows import ACTION_VK, DEFAULT_ACTIONS, HID_USAGE_TO_BUTTON, REMOTE_BUTTONS, RawInputListener, _INPUT, path_matches, normalize_path
 from xiaomi_remote2_ui import RemotePrototypeApp, VOICE_INPUT_COMBO, parse_key_combo, send_combo_down, send_combo_up
 from xiaomi_remote2_protocol import Capabilities, IMAADPCMDecoder, mic_open_command
+from xiaomi_remote2_ble import PCMOutput
 
 
 class Remote2IdentityTests(unittest.TestCase):
+    def test_audio_device_label_resolves_to_stable_index(self):
+        label = "CABLE Input (VB-Audio Virtual Cable) [Windows DirectSound] (#19)"
+        self.assertEqual(PCMOutput._device_id(label), 19)
+
     def test_remote_button_profile_has_thirteen_controls(self):
         self.assertEqual(len(REMOTE_BUTTONS), 13)
         self.assertEqual(HID_USAGE_TO_BUTTON[0x3E], "voice")

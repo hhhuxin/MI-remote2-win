@@ -463,7 +463,7 @@ class XiaomiRemote2App:
         info = ttk.LabelFrame(self.root, text="设备"); info.pack(fill=X, padx=8, pady=4)
         Label(info, text="VID 0x2717   PID 0x32B8   支持：Xiaomi Bluetooth Remote 2 / 2 Pro", anchor="w").pack(fill=X, padx=8, pady=4)
 
-        voice = ttk.LabelFrame(self.root, text="语音（程序输出选 CABLE Input；麦克风测试选 CABLE Output）")
+        voice = ttk.LabelFrame(self.root, text="语音（程序输出选 CABLE Input / CABLE In；录音输入选 CABLE Output）")
         voice.pack(fill=X, padx=8, pady=4)
         Label(voice, textvariable=self.voice_status, width=42, anchor="w").pack(side=LEFT, padx=6)
         Label(voice, text="程序播放到:").pack(side=LEFT)
@@ -505,7 +505,7 @@ class XiaomiRemote2App:
         try:
             names = PCMOutput.list_devices()
             self.audio_combo["values"] = names
-            preferred = next((n for n in names if n.strip().casefold().startswith("cable input")), names[0] if names else "")
+            preferred = PCMOutput.preferred_device(names)
             if preferred:
                 self.audio_var.set(preferred); self.voice.output.device_name = preferred
             elif not names:
